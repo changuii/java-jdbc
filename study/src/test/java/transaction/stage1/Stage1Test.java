@@ -17,6 +17,7 @@ import javax.sql.DataSource;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.util.concurrent.TimeUnit;
+import transaction.stage1.jdbc.JdbcTemplate;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -58,10 +59,10 @@ class Stage1Test {
      *   Read phenomena | Dirty reads
      * Isolation level  |
      * -----------------|-------------
-     * Read Uncommitted |
-     * Read Committed   |
-     * Repeatable Read  |
-     * Serializable     |
+     * Read Uncommitted | O
+     * Read Committed   | X
+     * Repeatable Read  | X
+     * Serializable     | X
      */
     @Test
     void dirtyReading() throws SQLException {
@@ -81,7 +82,8 @@ class Stage1Test {
             final var subConnection = dataSource.getConnection();
 
             // 적절한 격리 레벨을 찾는다.
-            final int isolationLevel = Connection.TRANSACTION_NONE;
+            // 왜 격리 수준 상수 값이 0, 1, 2, 3이 아니라 0, 1, 2, 4, 8일까?
+            final int isolationLevel = Connection.TRANSACTION_READ_COMMITTED;
 
             // 트랜잭션 격리 레벨을 설정한다.
             subConnection.setTransactionIsolation(isolationLevel);
@@ -111,10 +113,10 @@ class Stage1Test {
      *   Read phenomena | Non-repeatable reads
      * Isolation level  |
      * -----------------|---------------------
-     * Read Uncommitted |
-     * Read Committed   |
-     * Repeatable Read  |
-     * Serializable     |
+     * Read Uncommitted | O
+     * Read Committed   | O
+     * Repeatable Read  | X
+     * Serializable     | X
      */
     @Test
     void noneRepeatable() throws SQLException {
@@ -127,10 +129,13 @@ class Stage1Test {
         final var connection = dataSource.getConnection();
 
         // 트랜잭션을 시작한다.
+        // autoCommit을 끄는 코드인데 왜 여기서부터 트랜잭션을 시작하는걸까?????????????????
+        // 트랜잭션을 시작하는게 아니라, Auto Commit 모드가 꺼지고, 개발자가 직접 commit(), rollback을 호출해야 종료된다.
+        // 또한, 트랜잭션 시작은 첫 SQL 실행 시점부터이다.
         connection.setAutoCommit(false);
 
         // 적절한 격리 레벨을 찾는다.
-        final int isolationLevel = Connection.TRANSACTION_NONE;
+        final int isolationLevel = Connection.TRANSACTION_SERIALIZABLE;
 
         // 트랜잭션 격리 레벨을 설정한다.
         connection.setTransactionIsolation(isolationLevel);
@@ -142,6 +147,9 @@ class Stage1Test {
         new Thread(RunnableWrapper.accept(() -> {
             // 사용자B가 새로 연결하여
             final var subConnection = dataSource.getConnection();
+
+            // auto commit을 false하여, "qqqq" password가 적용되지 않게 한다. -> 아니다. Non Repeatable Read를 재현하려면, 커밋해야한다.
+            // subConnection.setAutoCommit(false);
 
             // 사용자A가 조회한 gugu 객체를 사용자B가 다시 조회했다.
             final var anotherUser = userDao.findByAccount(subConnection, "gugu");
@@ -160,6 +168,8 @@ class Stage1Test {
         // 트랜잭션 격리 레벨에 따라 아래 테스트가 통과한다.
         // 각 격리 레벨은 어떤 결과가 나오는지 직접 확인해보자.
         log.info("isolation level : {}, user : {}", isolationLevel, actual);
+
+        // 여기서 만약, Password가 변경되지 않았다면 Non-Repetable Read가 발생하지 않은 것이다.
         assertThat(actual.getPassword()).isEqualTo("password");
 
         connection.rollback();
@@ -173,10 +183,10 @@ class Stage1Test {
      *   Read phenomena | Phantom reads
      * Isolation level  |
      * -----------------|--------------
-     * Read Uncommitted |
-     * Read Committed   |
-     * Repeatable Read  |
-     * Serializable     |
+     * Read Uncommitted | O
+     * Read Committed   | O
+     * Repeatable Read  | O
+     * Serializable     | X
      */
     @Test
     void phantomReading() throws SQLException {
@@ -197,7 +207,7 @@ class Stage1Test {
         connection.setAutoCommit(false);
 
         // 적절한 격리 레벨을 찾는다.
-        final int isolationLevel = Connection.TRANSACTION_NONE;
+        final int isolationLevel = Connection.TRANSACTION_REPEATABLE_READ;
 
         // 트랜잭션 격리 레벨을 설정한다.
         connection.setTransactionIsolation(isolationLevel);
@@ -214,14 +224,18 @@ class Stage1Test {
 
             // 새로운 user 객체를 저장했다.
             // id는 2로 저장된다.
-            userDao.insert(subConnection, new User("bird", "password", "bird@woowahan.com"));
+            User user = new User("bird", "password", "bird@woowahan.com");
+            userDao.insert(subConnection, user);
 
+            // Serializable 격리 수준이라면, 트랜잭션이 순차적으로 실행되기 때문에 해당 스레드를 생성한 스레드가 먼저 실행되어 아래 로그가 먼저 출력된다.
+            // 하지만, 그 이하의 격리 수준이라면, 트랜잭션이 순차적으로 실행될 필요가 없기 때문에 해당 로그가 먼저 출력된다.
+            log.info("isolation level : {}, user : {}", isolationLevel, user);
             subConnection.commit();
         })).start();
 
         sleep(0.5);
 
-        // MySQL에서 팬텀 읽기를 시연하려면 update를 실행해야 한다.
+        // MySQL에서 팬텀 읽기를 시연하려면 update를 실행해야 한다. -> 왜임? ㅋㅋ
         // http://stackoverflow.com/questions/42794425/unable-to-produce-a-phantom-read/42796969#42796969
         userDao.updatePasswordGreaterThan(connection, "qqqq", 1);
 
@@ -239,7 +253,8 @@ class Stage1Test {
 
     private static DataSource createMySQLDataSource(final JdbcDatabaseContainer<?> container) {
         final var config = new HikariConfig();
-        config.setJdbcUrl(container.getJdbcUrl());
+        // MySQL에서는 멀티 쿼리를 허용해주기위해서 아래 설정을 추가해줘야 한다
+        config.setJdbcUrl(container.getJdbcUrl() + "?allowMultiQueries=true");
         config.setUsername(container.getUsername());
         config.setPassword(container.getPassword());
         config.setDriverClassName(container.getDriverClassName());

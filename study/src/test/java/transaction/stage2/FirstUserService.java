@@ -36,6 +36,7 @@ public class FirstUserService {
 
     @Transactional(propagation = Propagation.REQUIRED)
     public Set<String> saveFirstTransactionWithRequired() {
+        // transaction.stage2.FirstUserService.saveFirstTransactionWithRequired 이름으로 나옴
         final var firstTransactionName = TransactionSynchronizationManager.getCurrentTransactionName();
         userRepository.save(User.createTest());
         logActualTransactionActive();
@@ -77,7 +78,7 @@ public class FirstUserService {
         return of(firstTransactionName, secondTransactionName);
     }
 
-//    @Transactional(propagation = Propagation.REQUIRED)
+    @Transactional(propagation = Propagation.REQUIRED)
     public Set<String> saveFirstTransactionWithMandatory() {
         final var firstTransactionName = TransactionSynchronizationManager.getCurrentTransactionName();
         userRepository.save(User.createTest());
@@ -110,7 +111,7 @@ public class FirstUserService {
         return of(firstTransactionName, secondTransactionName);
     }
 
-    @Transactional(propagation = Propagation.REQUIRED)
+//    @Transactional(propagation = Propagation.REQUIRED)
     public Set<String> saveFirstTransactionWithNever() {
         final var firstTransactionName = TransactionSynchronizationManager.getCurrentTransactionName();
         userRepository.save(User.createTest());
